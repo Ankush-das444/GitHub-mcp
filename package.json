@@ -1,0 +1,19 @@
+{
+  "name": "github-mcp-server",
+  "version": "1.0.0",
+  "description": "Remote MCP server that connects to GitHub, deployable on Vercel serverless (no self-hosting).",
+  "type": "module",
+  "main": "api/mcp.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "octokit": "^4.1.0",
+    "zod": "^3.24.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
