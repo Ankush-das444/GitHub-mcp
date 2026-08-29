@@ -159,6 +159,62 @@ const TOOLS = [
       return { path: data.path, content };
     },
   },
+  {
+    name: "push_file",
+    description:
+      "Create or update a single file in a repo, committing it directly to a branch. This is the API equivalent of a git push for one file — it creates a real commit. For a new file, just give the content; for an existing file, this reads its current sha first and updates it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        owner: { type: "string" },
+        repo: { type: "string" },
+        path: { type: "string", description: "File path within the repo, e.g. src/index.js" },
+        content: { type: "string", description: "Full file content, plain text (not base64)" },
+        message: { type: "string", description: "Commit message" },
+        branch: { type: "string", description: "Branch to commit to (default: repo's default branch)" },
+      },
+      required: ["owner", "repo", "path", "content", "message"],
+    },
+    schema: z.object({
+      owner: z.string(),
+      repo: z.string(),
+      path: z.string(),
+      content: z.string(),
+      message: z.string(),
+      branch: z.string().optional(),
+    }),
+    handler: async (octokit, args) => {
+      // If the file already exists, GitHub requires its current sha to update it.
+      let sha;
+      try {
+        const existing = await octokit.rest.repos.getContent({
+          owner: args.owner,
+          repo: args.repo,
+          path: args.path,
+          ref: args.branch,
+        });
+        if (!Array.isArray(existing.data)) sha = existing.data.sha;
+      } catch (err) {
+        if (err.status !== 404) throw err; // 404 just means it's a new file
+      }
+
+      const { data } = await octokit.rest.repos.createOrUpdateFileContents({
+        owner: args.owner,
+        repo: args.repo,
+        path: args.path,
+        message: args.message,
+        content: Buffer.from(args.content, "utf-8").toString("base64"),
+        branch: args.branch,
+        sha,
+      });
+
+      return {
+        commit_sha: data.commit.sha,
+        commit_url: data.commit.html_url,
+        file_url: data.content.html_url,
+      };
+    },
+  },
 ];
 
 function buildServer(req) {
@@ -217,4 +273,5 @@ export default async function handler(req, res) {
 
   await server.connect(transport);
   await transport.handleRequest(req, res, req.body);
-        }
+      }
+    
