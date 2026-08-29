@@ -6,6 +6,8 @@
   "main": "api/mcp.js",
   "scripts": {
     "dev": "vercel dev",
+    "serve": "node dev.mjs",
+    "test": "node --test test/",
     "deploy": "vercel --prod"
   },
   "dependencies": {
@@ -15,5 +17,8 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
   }
 }

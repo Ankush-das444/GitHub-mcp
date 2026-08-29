@@ -1,0 +1,1246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>github-mcp-server · GitHub over MCP</title>
+<meta name="description" content="A stateless remote MCP server that gives any model client read and write access to GitHub, running on Vercel serverless functions." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0d10'/%3E%3Cpath d='M9 11l4.5 5L9 21M16.5 21H23' stroke='%235fd97a' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<style>
+  :root {
+    --bg: #08090c;
+    --bg-2: #0d1014;
+    --panel: #11141a;
+    --panel-2: #0e1116;
+    --titlebar: #0f1319;
+    --border: #232932;
+    --border-soft: #1a1f27;
+    --text: #dde3ea;
+    --text-strong: #f4f7fa;
+    --dim: #8791a0;
+    --dim-soft: #59626f;
+    --green: #5fd97a;
+    --violet: #9b8cff;
+    --amber: #e0a955;
+    --red: #f0665c;
+    --shadow: rgba(0, 0, 0, 0.62);
+    --glow: rgba(95, 217, 122, 0.14);
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  html[data-theme="light"] {
+    --bg: #eef0ec;
+    --bg-2: #e7eae5;
+    --panel: #fbfbf9;
+    --panel-2: #f4f5f1;
+    --titlebar: #f1f2ee;
+    --border: #d9dbd2;
+    --border-soft: #e6e7e1;
+    --text: #22272c;
+    --text-strong: #0d1114;
+    --dim: #6d757d;
+    --dim-soft: #9aa1a8;
+    --green: #1a8b4b;
+    --violet: #5b4bc4;
+    --amber: #9a6b12;
+    --red: #c2372d;
+    --shadow: rgba(60, 62, 52, 0.18);
+    --glow: rgba(26, 139, 75, 0.1);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    transition: background 0.3s ease, color 0.3s ease;
+  }
+
+  body { min-height: 100vh; overflow-x: hidden; }
+
+  /* ---------- ambient backdrop ---------- */
+  .ambient {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background:
+      radial-gradient(680px 380px at 12% -6%, var(--glow), transparent 70%),
+      radial-gradient(560px 340px at 92% 4%, color-mix(in srgb, var(--violet) 10%, transparent), transparent 72%),
+      linear-gradient(var(--bg), var(--bg-2) 70%, var(--bg));
+  }
+  .ambient::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    opacity: 0.42;
+    background-image:
+      linear-gradient(to right, color-mix(in srgb, var(--text) 5%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in srgb, var(--text) 5%, transparent) 1px, transparent 1px);
+    background-size: 46px 46px;
+    mask-image: radial-gradient(720px 520px at 50% 0%, #000 10%, transparent 78%);
+  }
+
+  .shell {
+    position: relative;
+    z-index: 1;
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 6vh 20px 80px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  /* ---------- window chrome ---------- */
+  .window {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 44px 90px -34px var(--shadow), 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent) inset;
+    overflow: hidden;
+    min-width: 0;
+    max-width: 100%;
+    opacity: 0;
+    transform: translateY(10px);
+    animation: rise 0.6s cubic-bezier(0.2, 0.7, 0.25, 1) forwards;
+  }
+  .window:nth-of-type(1) { animation-delay: 0.02s; }
+  .window:nth-of-type(2) { animation-delay: 0.1s; }
+  .window:nth-of-type(3) { animation-delay: 0.18s; }
+  @keyframes rise { to { opacity: 1; transform: none; } }
+
+  .titlebar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    background: var(--titlebar);
+    border-bottom: 1px solid var(--border);
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .dot.r { background: #ff5f57; } .dot.y { background: #febc2e; } .dot.g { background: #28c840; }
+  .path {
+    margin-left: 10px;
+    color: var(--dim-soft);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .titlebar .spacer { margin-left: auto; }
+
+  .tb-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--dim);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 5px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    white-space: nowrap;
+  }
+  .tb-btn:hover { color: var(--text-strong); border-color: var(--dim-soft); }
+  .tb-btn:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--violet);
+    outline-offset: 2px;
+  }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 34px 30px 28px; }
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--dim);
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    padding: 5px 11px;
+    border-radius: 999px;
+  }
+  .eyebrow .pip {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 60%, transparent);
+    animation: soft 2.2s infinite;
+  }
+  @keyframes soft {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 55%, transparent); }
+    50% { box-shadow: 0 0 0 5px transparent; }
+  }
+
+  h1 {
+    margin: 18px 0 10px;
+    font-size: clamp(28px, 5.2vw, 42px);
+    line-height: 1.08;
+    letter-spacing: -0.03em;
+    font-weight: 650;
+    color: var(--text-strong);
+  }
+  h1 .accent {
+    background: linear-gradient(96deg, var(--green), color-mix(in srgb, var(--green) 45%, var(--violet)));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .lead {
+    margin: 0;
+    max-width: 60ch;
+    font-size: 15px;
+    line-height: 1.65;
+    color: var(--dim);
+  }
+  .lead code {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 5px;
+    padding: 1px 5px;
+  }
+
+  /* ---------- flow ---------- */
+  .flow {
+    margin-top: 30px;
+    padding: 24px 20px 8px;
+    border: 1px solid var(--border-soft);
+    border-radius: 12px;
+    background: var(--panel-2);
+  }
+  .flow-diagram { display: flex; align-items: flex-start; }
+  .node {
+    display: flex; flex-direction: column; align-items: center; gap: 9px;
+    flex-shrink: 0; width: 116px;
+  }
+  .node-badge {
+    width: 48px; height: 48px; border-radius: 13px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-weight: 600; font-size: 15px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    box-shadow: 0 10px 24px -14px var(--shadow);
+    transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+  }
+  .node.lit .node-badge { transform: translateY(-2px); }
+  .node.client .node-badge { color: var(--violet); border-color: color-mix(in srgb, var(--violet) 38%, var(--border)); }
+  .node.bridge .node-badge { color: var(--text-strong); }
+  .node.bridge.lit .node-badge {
+    border-color: color-mix(in srgb, var(--green) 45%, var(--border));
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 10%, transparent), 0 12px 26px -14px var(--shadow);
+  }
+  .node.github .node-badge { color: var(--green); border-color: color-mix(in srgb, var(--green) 38%, var(--border)); }
+  .node-label { font-family: var(--mono); font-size: 11.5px; color: var(--text); text-align: center; }
+  .node-sub { font-size: 10.5px; color: var(--dim-soft); text-align: center; }
+
+  .track {
+    flex: 1; height: 2px; background: var(--border);
+    position: relative; margin: 0 -6px; top: 23px; border-radius: 2px; overflow: hidden;
+  }
+  .track .bead {
+    position: absolute; top: 50%; left: -8%;
+    width: 9px; height: 9px; margin-top: -4.5px; border-radius: 50%;
+    background: var(--dim-soft); opacity: 0;
+  }
+  .track.live .bead {
+    background: var(--green);
+    box-shadow: 0 0 10px 1px color-mix(in srgb, var(--green) 65%, transparent);
+    animation: travel 2.4s ease-in-out infinite;
+  }
+  .track.live.back .bead { animation-delay: 1.1s; }
+  @keyframes travel {
+    0% { left: -8%; opacity: 0; }
+    12% { opacity: 1; }
+    88% { opacity: 1; }
+    100% { left: 102%; opacity: 0; }
+  }
+
+  .status-row {
+    margin-top: 22px;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+    font-family: var(--mono); font-size: 12.5px;
+  }
+  .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--dim-soft); flex-shrink: 0; }
+  .pulse.online { background: var(--green); animation: soft 2s infinite; }
+  .pulse.offline { background: var(--red); }
+  .pulse.busy { background: var(--amber); animation: soft 1s infinite; }
+  #statusText { color: var(--dim); }
+  #statusText .hl { color: var(--text-strong); }
+  #statusText .err { color: var(--red); }
+  .chip {
+    font-family: var(--mono); font-size: 11px; color: var(--dim);
+    border: 1px solid var(--border); background: var(--panel);
+    padding: 4px 9px; border-radius: 6px; white-space: nowrap;
+  }
+  .chip b { color: var(--text); font-weight: 500; }
+
+  /* ---------- console ---------- */
+  /* min-width:0 everywhere matters on phones: grid/flex items default to
+     min-width:auto, so a single unwrappable <pre> line would otherwise blow
+     the whole card wider than the viewport. */
+  .console { display: grid; grid-template-columns: 292px 1fr; min-width: 0; }
+  .console-side { border-right: 1px solid var(--border-soft); background: var(--panel-2); min-width: 0; }
+  .console-main { min-width: 0; }
+
+  .side-block { padding: 16px 16px 4px; }
+  .side-block + .side-block { border-top: 1px solid var(--border-soft); }
+  .side-label {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.07em;
+    text-transform: uppercase; color: var(--dim-soft); margin-bottom: 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .side-label .count { color: var(--dim-soft); text-transform: none; letter-spacing: 0; }
+
+  .tool-btn {
+    width: 100%; text-align: left;
+    display: grid; grid-template-columns: 8px 1fr auto; align-items: center; gap: 10px;
+    padding: 9px 10px; margin-bottom: 3px;
+    background: transparent; border: 1px solid transparent; border-radius: 8px;
+    cursor: pointer; color: var(--text); font-family: var(--mono); font-size: 12.5px;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .tool-btn:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+  .tool-btn[aria-current="true"] {
+    background: color-mix(in srgb, var(--green) 9%, transparent);
+    border-color: color-mix(in srgb, var(--green) 32%, var(--border));
+  }
+  .tool-btn .tdot { width: 7px; height: 7px; border-radius: 50%; }
+  .tdot.read { background: var(--green); }
+  .tdot.write { background: var(--amber); }
+  .tool-btn .kind { font-size: 10px; color: var(--dim-soft); }
+
+  label.field { display: block; margin-bottom: 12px; }
+  .field-label {
+    display: flex; align-items: baseline; gap: 6px;
+    font-family: var(--mono); font-size: 11px; color: var(--dim); margin-bottom: 6px;
+  }
+  .field-label .req { color: var(--amber); }
+  .field-label .hint { color: var(--dim-soft); font-size: 10.5px; margin-left: auto; }
+
+  input[type="text"], input[type="password"], input[type="number"], select, textarea {
+    width: 100%;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    padding: 9px 11px;
+    border-radius: 8px;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  textarea { resize: vertical; min-height: 92px; line-height: 1.55; }
+  input::placeholder, textarea::placeholder { color: var(--dim-soft); }
+  input:hover, select:hover, textarea:hover { border-color: var(--dim-soft); }
+  input:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--green) 55%, var(--border));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 12%, transparent);
+  }
+
+  .token-wrap { position: relative; }
+  .token-wrap input { padding-right: 54px; }
+  .reveal {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    background: transparent; border: none; color: var(--dim-soft);
+    font-family: var(--mono); font-size: 10px; cursor: pointer; padding: 4px 6px;
+  }
+  .reveal:hover { color: var(--text); }
+
+  .check {
+    display: flex; align-items: flex-start; gap: 9px;
+    font-size: 11.5px; color: var(--dim); line-height: 1.5;
+    margin: 4px 0 12px; cursor: pointer;
+  }
+  .check input { width: 15px; height: 15px; margin: 1px 0 0; accent-color: var(--amber); flex-shrink: 0; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%;
+    background: color-mix(in srgb, var(--green) 16%, var(--panel));
+    border: 1px solid color-mix(in srgb, var(--green) 42%, var(--border));
+    color: var(--text-strong);
+    font-family: var(--mono); font-size: 12.5px; font-weight: 500;
+    padding: 10px 14px; border-radius: 9px; cursor: pointer;
+    transition: background 0.16s, border-color 0.16s, transform 0.1s;
+  }
+  .btn:hover { background: color-mix(in srgb, var(--green) 24%, var(--panel)); }
+  .btn:active { transform: translateY(1px); }
+  .btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+  .btn.ghost {
+    background: transparent;
+    border-color: var(--border);
+    color: var(--dim);
+    font-size: 11.5px;
+    padding: 8px 12px;
+  }
+  .btn.ghost:hover { color: var(--text-strong); border-color: var(--dim-soft); background: transparent; }
+
+  .side-foot { padding: 12px 16px 18px; }
+
+  /* ---------- output ---------- */
+  .tabs {
+    display: flex; gap: 2px; padding: 10px 12px 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .tab {
+    background: transparent; border: none; border-bottom: 2px solid transparent;
+    color: var(--dim-soft); font-family: var(--mono); font-size: 11.5px;
+    padding: 8px 12px 9px; cursor: pointer; transition: color 0.15s, border-color 0.15s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab[aria-selected="true"] { color: var(--text-strong); border-bottom-color: var(--green); }
+  .tab-bar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; padding-bottom: 6px; }
+
+  .panes { padding: 14px 16px 18px; }
+  .pane[hidden] { display: none; }
+  pre {
+    margin: 0;
+    background: var(--panel-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 9px;
+    padding: 13px 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.6;
+    overflow-x: auto;
+    max-height: 340px;
+    overflow-y: auto;
+    color: var(--text);
+    white-space: pre;
+    tab-size: 2;
+  }
+  .j-key { color: var(--violet); }
+  .j-str { color: var(--green); }
+  .j-num { color: var(--amber); }
+  .j-bool { color: var(--violet); }
+  .j-null { color: var(--dim-soft); }
+
+  .banner {
+    display: flex; align-items: flex-start; gap: 9px;
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.55;
+    padding: 10px 12px; border-radius: 8px; margin-bottom: 12px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--dim);
+  }
+  .banner.error { color: var(--red); border-color: color-mix(in srgb, var(--red) 38%, var(--border)); background: color-mix(in srgb, var(--red) 8%, var(--panel-2)); }
+  .banner.ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 34%, var(--border)); background: color-mix(in srgb, var(--green) 7%, var(--panel-2)); }
+  .banner.warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 34%, var(--border)); }
+
+  .placeholder {
+    padding: 34px 16px;
+    text-align: center;
+    color: var(--dim-soft);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.8;
+    border: 1px dashed var(--border);
+    border-radius: 9px;
+  }
+
+  /* ---------- setup ---------- */
+  .setup { padding: 26px 30px 30px; }
+  .section-head { margin-bottom: 20px; }
+  .section-head h2 {
+    margin: 0 0 6px; font-size: 19px; letter-spacing: -0.02em;
+    color: var(--text-strong); font-weight: 600;
+  }
+  .section-head p { margin: 0; color: var(--dim); font-size: 13.5px; line-height: 1.6; }
+
+  .steps { display: grid; gap: 14px; min-width: 0; }
+  .step {
+    border: 1px solid var(--border-soft);
+    border-radius: 11px;
+    background: var(--panel-2);
+    padding: 15px 16px;
+    min-width: 0;
+  }
+  .code-row { min-width: 0; }
+  .step-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .step-num {
+    font-family: var(--mono); font-size: 10.5px; color: var(--green);
+    border: 1px solid color-mix(in srgb, var(--green) 34%, var(--border));
+    background: color-mix(in srgb, var(--green) 9%, transparent);
+    border-radius: 5px; padding: 2px 7px;
+  }
+  .step-head h3 { margin: 0; font-size: 13.5px; color: var(--text-strong); font-weight: 600; letter-spacing: -0.01em; }
+  .step-head .note { font-size: 11.5px; color: var(--dim-soft); }
+  .step p { margin: 0 0 10px; font-size: 12.5px; color: var(--dim); line-height: 1.6; }
+
+  .code-row { position: relative; }
+  .code-row pre { padding-right: 62px; }
+  .copy {
+    position: absolute; top: 8px; right: 8px;
+    background: color-mix(in srgb, var(--panel) 80%, transparent);
+    border: 1px solid var(--border);
+    color: var(--dim); font-family: var(--mono); font-size: 10.5px;
+    padding: 4px 9px; border-radius: 6px; cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .copy:hover { color: var(--text-strong); border-color: var(--dim-soft); }
+  .copy.done { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, var(--border)); }
+
+  /* ---------- step 04: the URL is the product ---------- */
+  .url-row pre {
+    color: var(--green);
+    font-weight: 500;
+    font-size: 12.5px;
+    padding-right: 62px;
+  }
+  .inl {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-radius: 5px;
+    padding: 1px 5px;
+    white-space: nowrap;
+  }
+  details.adv { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 12px; min-width: 0; }
+  details.adv summary {
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--dim);
+    list-style: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+  details.adv summary::before { content: "▸"; transition: transform 0.15s ease; }
+  details.adv[open] summary::before { transform: rotate(90deg); }
+  details.adv summary:hover { color: var(--text); }
+  details.adv .code-row { margin-top: 10px; }
+  details.adv p { margin: 10px 0; }
+
+  footer {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
+    padding: 4px 4px 0;
+    font-family: var(--mono); font-size: 11px; color: var(--dim-soft);
+  }
+  footer a { color: var(--dim); text-decoration: none; border-bottom: 1px solid transparent; }
+  footer a:hover { color: var(--text); border-bottom-color: var(--dim-soft); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+    .window { opacity: 1; transform: none; }
+  }
+
+  @media (max-width: 860px) {
+    .console { grid-template-columns: 1fr; }
+    .console-side { border-right: none; border-bottom: 1px solid var(--border-soft); }
+    .shell { padding-top: 4vh; }
+    .hero, .setup { padding-left: 20px; padding-right: 20px; }
+    .node { width: 88px; }
+    .node-badge { width: 42px; height: 42px; border-radius: 11px; font-size: 13px; }
+    .track { top: 20px; }
+    .node-sub { display: none; }
+  }
+
+  @media (max-width: 520px) {
+    pre { font-size: 11px; }
+    .path { font-size: 10.5px; }
+    .step { padding: 13px 12px; }
+    .url-row pre { font-size: 11.5px; }
+  }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<main class="shell">
+
+  <!-- ══════════════ hero ══════════════ -->
+  <section class="window">
+    <div class="titlebar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="path">~/github-mcp-server — node api/mcp.js</span>
+      <span class="spacer"></span>
+      <button class="tb-btn" id="recheck" type="button">↻ recheck</button>
+      <button class="tb-btn" id="themeToggle" type="button" aria-label="Toggle colour theme">◐ theme</button>
+    </div>
+
+    <div class="hero">
+      <span class="eyebrow"><span class="pip"></span> model context protocol · streamable http</span>
+      <h1>Your repos, exposed as <span class="accent">tools a model can call.</span></h1>
+      <p class="lead">
+        A stateless remote MCP server on Vercel serverless. Point any MCP client at
+        <code>/api/mcp</code>, pass a GitHub token per request, and the model can read issues and
+        files — or commit one. No device stays on, nothing is self-hosted, no session is stored.
+      </p>
+
+      <div class="flow">
+        <div class="flow-diagram">
+          <div class="node client" id="nodeClient">
+            <div class="node-badge">C</div>
+            <div class="node-label">MCP client</div>
+            <div class="node-sub">Claude, Cursor, any</div>
+          </div>
+          <div class="track" id="track1"><span class="bead"></span></div>
+          <div class="node bridge" id="nodeBridge">
+            <div class="node-badge">⇄</div>
+            <div class="node-label">this server</div>
+            <div class="node-sub">stateless, per request</div>
+          </div>
+          <div class="track back" id="track2"><span class="bead"></span></div>
+          <div class="node github" id="nodeGithub">
+            <div class="node-badge">Gh</div>
+            <div class="node-label">GitHub</div>
+            <div class="node-sub">REST via Octokit</div>
+          </div>
+        </div>
+
+        <div class="status-row" aria-live="polite">
+          <span class="pulse" id="pulse"></span>
+          <span id="statusText">checking endpoint…</span>
+          <span class="spacer" style="flex:1"></span>
+          <span class="chip" id="chipServer">server <b>—</b></span>
+          <span class="chip" id="chipTools">tools <b>—</b></span>
+          <span class="chip" id="chipLatency">handshake <b>—</b></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ console ══════════════ -->
+  <section class="window">
+    <div class="titlebar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="path">try a tool</span>
+      <span class="spacer"></span>
+      <span class="chip" id="chipMode">auth <b>—</b></span>
+    </div>
+
+    <div class="console">
+      <!-- controls -->
+      <div class="console-side">
+        <div class="side-block">
+          <div class="side-label">endpoint</div>
+          <label class="field" style="margin-bottom:0">
+            <input type="text" id="endpoint" spellcheck="false" autocomplete="off" />
+          </label>
+        </div>
+
+        <div class="side-block">
+          <div class="side-label">tools <span class="count" id="toolCount"></span></div>
+          <div id="toolList" role="list"></div>
+        </div>
+
+        <div class="side-block">
+          <div class="side-label">arguments <span class="count" id="argToolName"></span></div>
+          <form id="argForm" autocomplete="off"></form>
+        </div>
+
+        <div class="side-block">
+          <div class="side-label">github token</div>
+          <label class="field">
+            <span class="field-label">Authorization <span class="hint">sent only to this endpoint</span></span>
+            <span class="token-wrap">
+              <input type="password" id="token" placeholder="github_pat_… or ghp_…" spellcheck="false" autocomplete="off" />
+              <button class="reveal" id="reveal" type="button">show</button>
+            </span>
+          </label>
+          <label class="check" id="writeGuardWrap" hidden>
+            <input type="checkbox" id="writeGuard" />
+            <span>This tool writes to GitHub — it creates a real commit or issue. I understand.</span>
+          </label>
+          <div class="side-foot" style="padding:0 0 6px">
+            <button class="btn" id="run" type="button">run tool</button>
+          </div>
+          <button class="btn ghost" id="forget" type="button" style="width:100%">forget token</button>
+        </div>
+      </div>
+
+      <!-- output -->
+      <div class="console-main">
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" id="tabResponse" aria-selected="true" aria-controls="paneResponse" type="button">response</button>
+          <button class="tab" role="tab" id="tabRequest" aria-selected="false" aria-controls="paneRequest" type="button">request</button>
+          <button class="tab" role="tab" id="tabCurl" aria-selected="false" aria-controls="paneCurl" type="button">curl</button>
+          <span class="tab-bar-right"><span class="chip" id="chipLast">last call <b>—</b></span></span>
+        </div>
+
+        <div class="panes">
+          <div class="pane" id="paneResponse" role="tabpanel" aria-labelledby="tabResponse">
+            <div id="responseBanner"></div>
+            <div id="responseBody">
+              <div class="placeholder">
+                nothing run yet<br />
+                pick a tool, fill in the arguments, hit <b>run tool</b>
+              </div>
+            </div>
+          </div>
+          <div class="pane" id="paneRequest" role="tabpanel" aria-labelledby="tabRequest" hidden>
+            <pre id="requestBody">// the exact JSON-RPC body the button sends</pre>
+          </div>
+          <div class="pane" id="paneCurl" role="tabpanel" aria-labelledby="tabCurl" hidden>
+            <pre id="curlBody"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════ setup ══════════════ -->
+  <section class="window">
+    <div class="titlebar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="path">setup</span>
+    </div>
+
+    <div class="setup">
+      <div class="section-head">
+        <h2>Connect a client in four steps</h2>
+        <p>The server never stores your token — it arrives on each request, or sits in a Vercel env var if this deployment is only for you.</p>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-head"><span class="step-num">01</span><h3>Make a GitHub token</h3><span class="note">fine-grained, scoped to the repos it should touch</span></div>
+          <p>GitHub → Settings → Developer settings → Personal access tokens. Contents: read/write only if you want <b style="color:var(--amber);font-weight:500">push_file</b>; Issues: read/write for <b style="color:var(--amber);font-weight:500">create_issue</b>. Read-only tokens still get all four read tools.</p>
+        </div>
+
+        <div class="step">
+          <div class="step-head"><span class="step-num">02</span><h3>Deploy</h3><span class="note">or <span style="font-family:var(--mono)">npm run serve</span> for local</span></div>
+          <div class="code-row"><button class="copy" type="button">copy</button><pre id="deployCmd"></pre></div>
+        </div>
+
+        <div class="step">
+          <div class="step-head"><span class="step-num">03</span><h3>Check it answers</h3><span class="note">GET is a health check, POST speaks MCP</span></div>
+          <div class="code-row"><button class="copy" type="button">copy</button><pre id="healthCmd"></pre></div>
+          <div class="code-row"><button class="copy" type="button">copy</button><pre id="toolsCmd"></pre></div>
+        </div>
+
+        <div class="step">
+          <div class="step-head"><span class="step-num">04</span><h3>Add it to your client</h3><span class="note">just the URL — nothing to save</span></div>
+          <p>
+            A remote MCP server is <b style="color:var(--text);font-weight:500">a URL</b>. In claude.ai go to
+            <b style="color:var(--text);font-weight:500">Settings → Connectors → Add custom connector</b> and paste it;
+            Claude Desktop and Cursor have the same "add by URL" dialog. There is no settings file to write.
+          </p>
+          <div class="code-row url-row"><button class="copy" type="button">copy</button><pre id="endpointUrl"></pre></div>
+          <p style="margin-top:10px">
+            If this deployment doesn't carry its own token, the same dialog has a field for one header:
+            <span class="inl">Authorization</span> = <span class="inl">Bearer &lt;PAT&gt;</span>.
+            Set <span class="inl">GITHUB_TOKEN</span> on Vercel and even that goes away — the URL alone is the whole setup.
+          </p>
+          <details class="adv">
+            <summary>my client only reads config files</summary>
+            <p>Older / file-based clients want the same URL expressed as JSON or a CLI line — still no token stored on this server:</p>
+            <div class="code-row"><button class="copy" type="button">copy</button><pre id="clientCfg"></pre></div>
+            <div class="code-row"><button class="copy" type="button">copy</button><pre id="cliCmd"></pre></div>
+          </details>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span id="footEndpoint">—</span>
+    <span>·</span>
+    <a href="https://github.com/Ankush-das444/GitHub-mcp" target="_blank" rel="noopener">source</a>
+    <a href="https://github.com/Ankush-das444/GitHub-mcp/blob/main/LICENSE" target="_blank" rel="noopener">MIT</a>
+    <span>·</span>
+    <span>tokens are held in this browser tab only (sessionStorage) and sent to the endpoint above</span>
+  </footer>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  /* ──────────── static fallback: used when the endpoint can't be reached ──────────── */
+  const FALLBACK_TOOLS = [
+    { name: "list_repos", writes: false, description: "List repositories for the authenticated GitHub user, most recently updated first.",
+      inputSchema: { type: "object", properties: { per_page: { type: "number", description: "Max results, 1-100 (default 20)" } } } },
+    { name: "get_repo", writes: false, description: "Get details about a specific repository.",
+      inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" } }, required: ["owner", "repo"] } },
+    { name: "list_issues", writes: false, description: "List issues in a repository. Pull requests are excluded unless you ask for them.",
+      inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" },
+        state: { type: "string", enum: ["open", "closed", "all"] }, per_page: { type: "number" },
+        include_pull_requests: { type: "boolean" } }, required: ["owner", "repo"] } },
+    { name: "get_file_contents", writes: false, description: "Read a file's contents from a repository, or list a directory when the path is a folder.",
+      inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" }, path: { type: "string" },
+        ref: { type: "string", description: "Branch, tag, or commit SHA" } }, required: ["owner", "repo", "path"] } },
+    { name: "create_issue", writes: true, description: "Create a new issue in a repository.",
+      inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" }, title: { type: "string" }, body: { type: "string" } },
+        required: ["owner", "repo", "title"] } },
+    { name: "push_file", writes: true, description: "Create or update a single file in a repo, committing it directly to a branch. This creates a real commit.",
+      inputSchema: { type: "object", properties: { owner: { type: "string" }, repo: { type: "string" },
+        path: { type: "string", description: "e.g. src/index.js" }, content: { type: "string", description: "Plain text, not base64" },
+        message: { type: "string", description: "Commit message" }, branch: { type: "string" } },
+        required: ["owner", "repo", "path", "content", "message"] } },
+  ];
+
+  const $ = (id) => document.getElementById(id);
+  const state = { tools: FALLBACK_TOOLS, selected: null, live: false, lastRequest: null };
+
+  /* ──────────── theme ──────────── */
+  const root = document.documentElement;
+  const applyTheme = (t) => (t === "light" ? root.setAttribute("data-theme", "light") : root.removeAttribute("data-theme"));
+  let stored = null;
+  try { stored = localStorage.getItem("mcp-theme"); } catch {}
+  applyTheme(stored || (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"));
+  $("themeToggle").addEventListener("click", () => {
+    const next = root.getAttribute("data-theme") === "light" ? "dark" : "light";
+    applyTheme(next);
+    try { localStorage.setItem("mcp-theme", next); } catch {}
+  });
+
+  /* ──────────── endpoint + token ──────────── */
+  const originUsable = location.origin && location.origin !== "null" && !location.origin.startsWith("file:");
+  const defaultEndpoint = originUsable ? location.origin + "/api/mcp" : "http://localhost:3000/api/mcp";
+  const endpointInput = $("endpoint");
+  endpointInput.value = sessionStorage.getItem("mcp-endpoint") || defaultEndpoint;
+  const getEndpoint = () => endpointInput.value.trim() || defaultEndpoint;
+  endpointInput.addEventListener("input", () => {
+    try { sessionStorage.setItem("mcp-endpoint", getEndpoint()); } catch {}
+    renderCommands();
+  });
+
+  const tokenInput = $("token");
+  tokenInput.value = sessionStorage.getItem("mcp-token") || "";
+  const persistToken = () => {
+    try {
+      if (tokenInput.value) sessionStorage.setItem("mcp-token", tokenInput.value);
+      else sessionStorage.removeItem("mcp-token");
+    } catch {}
+  };
+  tokenInput.addEventListener("input", () => { persistToken(); renderCommands(); updateRunState(); });
+  $("reveal").addEventListener("click", () => {
+    const showing = tokenInput.type === "text";
+    tokenInput.type = showing ? "password" : "text";
+    $("reveal").textContent = showing ? "show" : "hide";
+  });
+  $("forget").addEventListener("click", () => {
+    tokenInput.value = "";
+    persistToken();
+    renderCommands();
+    updateRunState();
+    flash($("forget"), "forgotten");
+  });
+
+  /* ──────────── tiny helpers ──────────── */
+  function escapeHtml(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+  function highlight(json) {
+    return escapeHtml(json).replace(
+      /("(\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false)\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
+      (m) => {
+        let cls = "num";
+        if (m.startsWith('"')) cls = /:\s*$/.test(m) ? "key" : "str";
+        else if (m === "true" || m === "false") cls = "bool";
+        else if (m === "null") cls = "null";
+        return '<span class="j-' + cls + '">' + m + "</span>";
+      }
+    );
+  }
+
+  function showJson(el, value) {
+    const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    let pretty = text;
+    try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch {}
+    el.innerHTML = highlight(pretty);
+  }
+
+  function flash(btn, label) {
+    const prev = btn.textContent;
+    btn.textContent = label;
+    btn.classList.add("done");
+    setTimeout(() => { btn.textContent = prev; btn.classList.remove("done"); }, 1400);
+  }
+
+  async function copyText(text, btn) {
+    try { await navigator.clipboard.writeText(text); flash(btn, "copied"); }
+    catch {
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); flash(btn, "copied"); } catch { flash(btn, "select it"); }
+      ta.remove();
+    }
+  }
+
+  document.querySelectorAll(".copy").forEach((btn) => {
+    btn.addEventListener("click", () => copyText(btn.nextElementSibling.textContent, btn));
+  });
+
+  /* ──────────── MCP transport ──────────── */
+  const MCP_HEADERS = { "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
+
+  function parseResponse(text, contentType) {
+    if (contentType && contentType.includes("text/event-stream")) {
+      return text.split("\n").filter((l) => l.startsWith("data: ")).map((l) => JSON.parse(l.slice(6)));
+    }
+    return text ? [JSON.parse(text)] : [];
+  }
+
+  async function rpc(body) {
+    const headers = { ...MCP_HEADERS };
+    const token = tokenInput.value.trim();
+    if (token) headers["Authorization"] = "Bearer " + token;
+    const started = performance.now();
+    const res = await fetch(getEndpoint(), { method: "POST", headers, body: JSON.stringify(body) });
+    const ms = Math.round(performance.now() - started);
+    const ct = res.headers.get("content-type") || "";
+    let msgs = [];
+    const text = await res.text();
+    try { msgs = parseResponse(text, ct); } catch {}
+    return { status: res.status, ms, msgs, raw: text };
+  }
+
+  const findMsg = (msgs, id) => msgs.find((m) => m && m.id === id);
+
+  /* ──────────── live status ──────────── */
+  const pulse = $("pulse"), statusText = $("statusText");
+  const track1 = $("track1"), track2 = $("track2");
+  const bridge = $("nodeBridge");
+
+  function setStatus(kind, html) {
+    pulse.className = "pulse" + (kind ? " " + kind : "");
+    statusText.innerHTML = html;
+    const live = kind === "online";
+    track1.classList.toggle("live", live);
+    track2.classList.toggle("live", live);
+    bridge.classList.toggle("lit", live);
+  }
+
+  function setChip(id, label, value) { $(id).innerHTML = label + " <b>" + escapeHtml(String(value)) + "</b>"; }
+
+  async function checkEndpoint() {
+    setStatus("busy", "checking endpoint…");
+    setChip("chipServer", "server", "…");
+    setChip("chipTools", "tools", "…");
+    setChip("chipLatency", "handshake", "…");
+
+    try {
+      const init = await rpc({
+        jsonrpc: "2.0", id: 1, method: "initialize",
+        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "mcp-dashboard", version: "1.0.0" } },
+      });
+      const initMsg = findMsg(init.msgs, 1);
+      if (!initMsg || !initMsg.result) {
+        throw new Error(initMsg?.error?.message || "no initialize result (HTTP " + init.status + ")");
+      }
+      const info = initMsg.result.serverInfo || {};
+
+      const list = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+      const listMsg = findMsg(list.msgs, 2);
+      const tools = listMsg?.result?.tools;
+      if (!Array.isArray(tools)) throw new Error("tools/list returned no tools");
+
+      // Prefer the server's own read/write flags from the health endpoint.
+      let flags = null;
+      try {
+        const base = getEndpoint().replace(/\/+$/, "");
+        const health = await fetch(base, { method: "GET" });
+        if (health.ok) flags = (await health.json()).tools;
+      } catch {}
+
+      const merged = tools.map((t) => ({
+        ...t,
+        writes: flags ? !!flags.find((f) => f.name === t.name)?.writes : !!FALLBACK_TOOLS.find((f) => f.name === t.name)?.writes,
+      }));
+
+      state.tools = merged;
+      state.live = true;
+      renderTools();
+      setStatus("online", 'bridge online — <span class="hl">' + escapeHtml(info.name || "server") + "</span> v" +
+        escapeHtml(info.version || "?") + ", ready for tool calls");
+      setChip("chipServer", "server", (info.name || "server") + " v" + (info.version || "?"));
+      setChip("chipTools", "tools", tools.length);
+      setChip("chipLatency", "handshake", init.ms + " ms");
+      setChip("chipMode", "auth", tokenInput.value.trim() ? "bearer token" : "token needed");
+    } catch (err) {
+      state.live = false;
+      setStatus("offline", '<span class="err">unreachable</span> — ' + escapeHtml(err.message || String(err)) +
+        " · cross-origin deployments need the CORS headers in api/mcp.js");
+      setChip("chipServer", "server", "offline");
+      setChip("chipTools", "tools", state.tools.length + " (docs)");
+      setChip("chipLatency", "handshake", "—");
+      setChip("chipMode", "auth", tokenInput.value.trim() ? "bearer token" : "token needed");
+      renderTools();
+    }
+    renderCommands();
+  }
+
+  $("recheck").addEventListener("click", checkEndpoint);
+
+  /* ──────────── tool list + arg form ──────────── */
+  const LONG_TEXT = new Set(["content", "body"]);
+
+  function renderTools() {
+    const list = $("toolList");
+    list.innerHTML = "";
+    const reads = state.tools.filter((t) => !t.writes);
+    const writes = state.tools.filter((t) => t.writes);
+    const add = (group, label) => {
+      if (!group.length) return;
+      const head = document.createElement("div");
+      head.className = "field-label";
+      head.innerHTML = '<span>' + label + '</span><span class="hint">' + group.length + "</span>";
+      head.style.margin = "2px 0 6px";
+      list.appendChild(head);
+      group.forEach((tool) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "tool-btn";
+        btn.setAttribute("role", "listitem");
+        btn.setAttribute("aria-current", String(state.selected === tool.name));
+        btn.innerHTML = '<span class="tdot ' + (tool.writes ? "write" : "read") + '"></span>' +
+          "<span>" + escapeHtml(tool.name) + "</span>" +
+          '<span class="kind">' + (tool.writes ? "writes" : "read") + "</span>";
+        btn.title = tool.description || tool.name;
+        btn.addEventListener("click", () => selectTool(tool.name));
+        list.appendChild(btn);
+      });
+    };
+    add(reads, "reads");
+    add(writes, "writes");
+    $("toolCount").textContent = "— " + state.tools.length + (state.live ? " live" : " documented");
+    if (!state.selected || !state.tools.some((t) => t.name === state.selected)) {
+      selectTool((state.tools[0] || {}).name);
+    }
+  }
+
+  function selectTool(name) {
+    state.selected = name;
+    document.querySelectorAll(".tool-btn").forEach((b, i) => {
+      b.setAttribute("aria-current", String(state.tools[i] && state.tools[i].name === name));
+    });
+    const tool = state.tools.find((t) => t.name === name);
+    $("argToolName").textContent = tool ? "· " + tool.name : "";
+    $("writeGuardWrap").hidden = !(tool && tool.writes);
+    $("writeGuard").checked = false;
+    buildForm(tool);
+    renderCommands();
+    updateRunState();
+  }
+
+  function buildForm(tool) {
+    const form = $("argForm");
+    form.innerHTML = "";
+    if (!tool) return;
+    const props = tool.inputSchema?.properties || {};
+    const required = new Set(tool.inputSchema?.required || []);
+    const names = Object.keys(props);
+    if (!names.length) {
+      const p = document.createElement("div");
+      p.className = "field-label";
+      p.textContent = "no arguments";
+      form.appendChild(p);
+      return;
+    }
+    for (const name of names) {
+      const spec = props[name];
+      const wrap = document.createElement("label");
+      wrap.className = "field";
+      const lab = document.createElement("span");
+      lab.className = "field-label";
+      lab.innerHTML = "<span>" + escapeHtml(name) + "</span>" +
+        (required.has(name) ? '<span class="req">*</span>' : "") +
+        '<span class="hint">' + escapeHtml(spec.type || "") + "</span>";
+      wrap.appendChild(lab);
+
+      let input;
+      if (spec.enum) {
+        input = document.createElement("select");
+        const blank = document.createElement("option");
+        blank.value = ""; blank.textContent = required.has(name) ? spec.enum[0] : "— default —";
+        input.appendChild(blank);
+        spec.enum.forEach((v) => {
+          const o = document.createElement("option");
+          o.value = v; o.textContent = v;
+          input.appendChild(o);
+        });
+        if (required.has(name)) input.value = spec.enum[0];
+      } else if (spec.type === "boolean") {
+        input = document.createElement("select");
+        [["", "— default —"], ["true", "true"], ["false", "false"]].forEach(([v, l]) => {
+          const o = document.createElement("option"); o.value = v; o.textContent = l; input.appendChild(o);
+        });
+      } else if (LONG_TEXT.has(name)) {
+        input = document.createElement("textarea");
+      } else {
+        input = document.createElement("input");
+        input.type = spec.type === "number" ? "number" : "text";
+        if (spec.type === "number") input.step = "1";
+      }
+      input.name = name;
+      input.dataset.kind = spec.type || "string";
+      input.spellcheck = false;
+      input.autocomplete = "off";
+      if (spec.description) input.placeholder = spec.description.length > 60 ? spec.description.slice(0, 57) + "…" : spec.description;
+      if (required.has(name)) input.required = true;
+      // friendly defaults so the first run does something sensible
+      if (!required.has(name) && name === "per_page") input.placeholder = "default 20";
+      wrap.appendChild(input);
+      form.appendChild(wrap);
+    }
+  }
+
+  function collectArgs() {
+    const args = {};
+    const tool = state.tools.find((t) => t.name === state.selected);
+    const required = new Set(tool?.inputSchema?.required || []);
+    for (const input of $("argForm").querySelectorAll("[name]")) {
+      const raw = input.value.trim();
+      if (raw === "") {
+        if (required.has(input.name)) throw new Error("missing required argument: " + input.name);
+        continue;
+      }
+      args[input.name] = input.dataset.kind === "number" ? Number(raw)
+        : input.dataset.kind === "boolean" ? raw === "true"
+        : raw;
+    }
+    return args;
+  }
+
+  function updateRunState() {
+    const tool = state.tools.find((t) => t.name === state.selected);
+    const blocked = !!(tool && tool.writes) && !$("writeGuard").checked;
+    $("run").disabled = blocked;
+    $("run").textContent = blocked ? "acknowledge the write first" : "run " + (tool ? tool.name : "tool");
+    setChip("chipMode", "auth", tokenInput.value.trim() ? "bearer token" : "token needed");
+  }
+  $("writeGuard").addEventListener("change", updateRunState);
+
+  /* ──────────── tabs ──────────── */
+  const tabPairs = [["tabResponse", "paneResponse"], ["tabRequest", "paneRequest"], ["tabCurl", "paneCurl"]];
+  tabPairs.forEach(([tabId, paneId]) => {
+    $(tabId).addEventListener("click", () => {
+      tabPairs.forEach(([t, p]) => {
+        const on = t === tabId;
+        $(t).setAttribute("aria-selected", String(on));
+        $(p).hidden = !on;
+      });
+    });
+  });
+
+  /* ──────────── run a tool ──────────── */
+  function currentBody() {
+    return {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: state.selected, arguments: collectArgs() },
+    };
+  }
+
+  function renderCommands() {
+    const ep = getEndpoint();
+    const tool = state.tools.find((t) => t.name === state.selected);
+    let args = {};
+    try { args = collectArgs(); } catch {}
+    const body = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: state.selected, arguments: args } };
+    const tokenFlag = tokenInput.value.trim() ? ' \\\n  -H "Authorization: Bearer ' + tokenInput.value.trim() + '"' : "";
+
+    $("requestBody").textContent = "// POST " + ep + "\n" + JSON.stringify(body, null, 2);
+    $("curlBody").textContent =
+      "curl -X POST " + ep + " \\\n" +
+      '  -H "Content-Type: application/json" \\\n' +
+      '  -H "Accept: application/json, text/event-stream"' + tokenFlag + " \\\n" +
+      "  -d '" + JSON.stringify(body) + "'";
+    $("deployCmd").textContent =
+      "git clone https://github.com/Ankush-das444/GitHub-mcp.git\n" +
+      "cd GitHub-mcp\n" +
+      "npm install\n" +
+      "vercel login && vercel --prod      # or: npm run serve  (local, no login)";
+    $("healthCmd").textContent = "curl " + ep.replace(/\/+$/, "");
+    $("toolsCmd").textContent =
+      "curl -X POST " + ep + " \\\n" +
+      '  -H "Content-Type: application/json" \\\n' +
+      '  -H "Accept: application/json, text/event-stream" \\\n' +
+      '  -d \'{"jsonrpc":"2.0","id":1,"method":"tools/list"}\'';
+    $("endpointUrl").textContent = ep;
+    $("cliCmd").textContent =
+      "claude mcp add --transport http github " + ep + ' \\\n  --header "Authorization: Bearer <your GitHub PAT>"';
+    $("clientCfg").textContent = JSON.stringify({
+      mcpServers: {
+        github: {
+          type: "http",
+          url: ep,
+          headers: { Authorization: "Bearer <your GitHub PAT>" },
+        },
+      },
+    }, null, 2);
+    $("footEndpoint").textContent = ep;
+    if (tool) $("argToolName").textContent = "· " + tool.name;
+  }
+
+  $("run").addEventListener("click", async () => {
+    const banner = $("responseBanner");
+    const out = $("responseBody");
+    banner.innerHTML = "";
+    let body;
+    try { body = currentBody(); }
+    catch (err) {
+      banner.innerHTML = '<div class="banner error">' + escapeHtml(err.message) + "</div>";
+      return;
+    }
+    $("run").disabled = true;
+    setStatus("busy", "calling <span class='hl'>" + escapeHtml(state.selected) + "</span>…");
+    out.innerHTML = '<div class="placeholder">waiting for ' + escapeHtml(state.selected) + "…</div>";
+
+    try {
+      const { status, ms, msgs, raw } = await rpc(body);
+      state.lastRequest = body;
+      const msg = findMsg(msgs, 1);
+      setChip("chipLast", "last call", status + " · " + ms + " ms");
+
+      if (!msg) {
+        banner.innerHTML = '<div class="banner error">HTTP ' + status + " — no JSON-RPC response. " +
+          escapeHtml((raw || "").slice(0, 220)) + "</div>";
+        out.innerHTML = '<div class="placeholder">empty response body</div>';
+        setStatus("offline", '<span class="err">call failed</span> — HTTP ' + status);
+        return;
+      }
+      if (msg.error) {
+        banner.innerHTML = '<div class="banner error">JSON-RPC ' + msg.error.code + " — " + escapeHtml(msg.error.message || "") + "</div>";
+        showJson(out, msg.error);
+        setStatus("offline", '<span class="err">protocol error</span> — ' + escapeHtml(msg.error.message || ""));
+        return;
+      }
+      const result = msg.result || {};
+      const text = (result.content || []).map((c) => c.text || "").join("\n");
+      if (result.isError) {
+        banner.innerHTML = '<div class="banner error">' + escapeHtml(text || "tool reported an error") + "</div>";
+        out.innerHTML = '<div class="placeholder">' + escapeHtml(text || "tool reported an error") + "</div>";
+        setStatus("offline", '<span class="err">' + escapeHtml(state.selected) + " failed</span> — see the message above");
+        return;
+      }
+      banner.innerHTML = '<div class="banner ok">' + escapeHtml(state.selected) + " returned in " + ms + " ms</div>";
+      showJson(out, text || result);
+      setStatus("online", "bridge online — last call <span class='hl'>" + escapeHtml(state.selected) + "</span> ok in " + ms + " ms");
+    } catch (err) {
+      banner.innerHTML = '<div class="banner error">' + escapeHtml(err.message || String(err)) +
+        " — the endpoint is unreachable, or the browser blocked a cross-origin call.</div>";
+      out.innerHTML = '<div class="placeholder">no response</div>';
+      setStatus("offline", '<span class="err">unreachable</span> — ' + escapeHtml(err.message || ""));
+    } finally {
+      updateRunState();
+      renderCommands();
+    }
+  });
+
+  /* ──────────── boot ──────────── */
+  renderTools();
+  renderCommands();
+  updateRunState();
+  checkEndpoint();
+})();
+</script>
+</body>
+</html>
